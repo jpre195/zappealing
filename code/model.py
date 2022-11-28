@@ -1,5 +1,5 @@
 import pandas as pd
-from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix, precision_recall_curve, PrecisionRecallDisplay
 import os
 from PIL import Image
 from torchvision import transforms
@@ -108,6 +108,57 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs = 25):
     print('Finished training')
 
     return train_losses, test_losses
+
+def get_confusion_matrix(model, dataloader, threshold = 0.5):
+
+    true = []
+    pred = []
+
+    model.eval()
+    
+    for data in tqdm(dataloader):
+
+        inputs, labels = data
+
+        true.append(labels.item())
+
+        outputs = model(inputs)
+        outputs = outputs.flatten().tolist()
+
+        # curr_pred = 1 if outputs[1] > outputs[0] else 0
+        curr_pred = 1 if outputs[1] > threshold else 0
+
+        pred.append(curr_pred)
+
+    conf_mat = confusion_matrix(true, pred)
+
+    return conf_mat
+
+def plot_pr_curve(model, dataloader):
+
+    true = []
+    pred = []
+
+    model.eval()
+    
+    for data in tqdm(dataloader):
+
+        inputs, labels = data
+
+        true.append(labels.item())
+
+        outputs = model(inputs)
+        outputs = outputs.flatten().tolist()[1]
+
+        pred.append(outputs)
+
+    PrecisionRecallDisplay.from_predictions(true, pred)
+    plt.show()
+
+    precision, recall, thresholds = precision_recall_curve(true, pred)
+
+    return precision, recall, thresholds
+
         
 
 #%% 
@@ -172,6 +223,22 @@ if __name__ == '__main__':
     train_losses, test_losses = train_model(model, criterion, optimizer, scheduler, num_epochs = epochs)
 
     print(model(input_batch))
+
+    train_pr, train_rc, train_thresholds = plot_pr_curve(model, train_dataloader)
+    test_pr, test_rc, test_thresholds = plot_pr_curve(model, test_dataloader)
+
+    pr_rc_df = pd.DataFrame({'Precision' : train_pr[:-1],
+                            'Recall' : train_rc[:-1],
+                            'Thresholds' : train_thresholds})
+
+    thresholds = pr_rc_df[pr_rc_df.Recall >= 0.75][pr_rc_df.Precision >= 0.75]
+    thresholds = min(thresholds['Thresholds'])
+
+    train_confusion = get_confusion_matrix(model, train_dataloader, threshold = thresholds)
+    test_confusion = get_confusion_matrix(model, test_dataloader, threshold = thresholds)
+
+    print(train_confusion)
+    print(test_confusion)
 
     plt.plot(range(epochs), train_losses, label = 'Train')
     plt.plot(range(epochs), test_losses, label = 'Test')

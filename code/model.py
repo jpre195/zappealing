@@ -1,9 +1,10 @@
 import pandas as pd
-from sklearn.metrics import confusion_matrix, precision_recall_curve, PrecisionRecallDisplay
+from sklearn.metrics import confusion_matrix, precision_recall_curve, PrecisionRecallDisplay, roc_curve
 import os
 from PIL import Image
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
+import torch
 from torch.hub import load
 import torch.nn as nn
 import torch.optim as optim
@@ -87,6 +88,7 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs = 25):
                     
                     loss.backward()
                     optimizer.step()
+                    scheduler.step()
 
                 running_loss += loss.item()
 
@@ -98,8 +100,6 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs = 25):
             if phase == 'train':
 
                 train_losses.append(running_loss / len(dataloader))
-
-                scheduler.step()
 
             else:
 
@@ -159,6 +159,28 @@ def plot_pr_curve(model, dataloader):
 
     return precision, recall, thresholds
 
+def get_roc_curve(model, dataloader):
+
+    true = []
+    pred = []
+
+    model.eval()
+    
+    for data in tqdm(dataloader):
+
+        inputs, labels = data
+
+        true.append(labels.item())
+
+        outputs = model(inputs)
+        outputs = outputs.flatten().tolist()[1]
+
+        pred.append(outputs)
+
+    fpr, tpr, thresholds = precision_recall_curve(true, pred)
+
+    return fpr, tpr, thresholds
+
         
 
 #%% 
@@ -170,6 +192,8 @@ if __name__ == '__main__':
     print('Reading data...', end = '')
     df = pd.read_csv('./data/data_labeled.csv')
     print('Complete!')
+
+    print((df.value_counts('simple') / df.shape[0]).to_dict())
 
     print('Loading model...', end = '')
     model = load('pytorch/vision:v0.10.0', 'resnet18', pretrained=True)
@@ -192,11 +216,6 @@ if __name__ == '__main__':
 
     print(df.head())
 
-    # dataiter = iter(train_dataloader)
-    # images, labels = next(dataiter)
-
-    # print(labels)
-
     input_image = Image.open(f'./images/Bathroom/bath_17.jpg')
     input_tensor = preprocess(input_image)
     input_batch = input_tensor.unsqueeze(0) # create a mini-batch as expected by the model
@@ -213,10 +232,15 @@ if __name__ == '__main__':
 
     print(model(input_batch))
 
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(), lr = 0.1)
+    weights_dict = (df.value_counts('simple') / df.shape[0]).to_dict()
+    weights = torch.tensor([1 - weights_dict[0], 1 - weights_dict[1]])
 
-    scheduler = lr_scheduler.StepLR(optimizer, step_size = 1, gamma = 0.1)
+    print(weights)
+
+    criterion = nn.CrossEntropyLoss(weight = weights)
+    optimizer = optim.SGD(model.parameters(), lr = 0.75)
+
+    scheduler = lr_scheduler.StepLR(optimizer, step_size = 10, gamma = 0.1)
 
     epochs = int(args.epochs)
 
@@ -227,12 +251,26 @@ if __name__ == '__main__':
     train_pr, train_rc, train_thresholds = plot_pr_curve(model, train_dataloader)
     test_pr, test_rc, test_thresholds = plot_pr_curve(model, test_dataloader)
 
+    # fpr, tpr, train_thresholds = get_roc_curve(model, train_dataloader)
+
     pr_rc_df = pd.DataFrame({'Precision' : train_pr[:-1],
                             'Recall' : train_rc[:-1],
                             'Thresholds' : train_thresholds})
 
-    thresholds = pr_rc_df[pr_rc_df.Recall >= 0.75][pr_rc_df.Precision >= 0.75]
+    # roc_df = pd.DataFrame({'FPR' : fpr[:-1],
+    #                         'TPR' : tpr[:-1],
+    #                         'Thresholds' : train_thresholds})
+
+    print(pr_rc_df)
+    # print(roc_df)
+
+    # thresholds = roc_df[roc_df.FPR < 0.25]
+    # thresholds = min(thresholds['Thresholds'])
+
+    thresholds = pr_rc_df[pr_rc_df.Precision >= 0.75][pr_rc_df.Recall >= 0.75]
     thresholds = min(thresholds['Thresholds'])
+
+    print(thresholds)
 
     train_confusion = get_confusion_matrix(model, train_dataloader, threshold = thresholds)
     test_confusion = get_confusion_matrix(model, test_dataloader, threshold = thresholds)
